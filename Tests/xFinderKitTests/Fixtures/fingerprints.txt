@@ -1,0 +1,7 @@
+ed25519 256 SHA256:L9tZHs1yxVL1J6BSeRTzpRRBg4fgomRDaXX7yNISVtI fixture-ed25519 (ED25519)
+ed25519_encrypted 256 SHA256:uAPPuKdU7c/0SL5x1/p17a+bTWfeYj2jR5PFodLEk7c no comment (ED25519)
+rsa 2048 SHA256:0NwQVYj7/fit7K+5F09Wl/HG15XW0QiNyVhv1zGcehE fixture-rsa (RSA)
+rsa_pem 2048 SHA256:X9b8jaf+iW4kbS6fWo+ueZj4OF4rzJ8ls9NUQDz02B8 no comment (RSA)
+ecdsa_p256 256 SHA256:Ggd7U1xFMiLqlvEVM/7t3wFyX8XFT4qJ9NVoyOWkKvM fixture-p256 (ECDSA)
+ecdsa_p384_encrypted 384 SHA256:wFpEVeEaU75BJyEqmw6iQ3Igg5zGZOyPUFApIoRjkjs no comment (ECDSA)
+ecdsa_p521 521 SHA256:gH1fzshzKgXTu52xBFOQotKuxh2J4r8kADZKSQr8jdY fixture-p521 (ECDSA)

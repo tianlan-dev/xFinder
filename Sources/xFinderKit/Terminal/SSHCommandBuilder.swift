@@ -1,0 +1,148 @@
+import Foundation
+
+/// What to connect to in an external terminal.
+public struct SSHCommandSpec: Sendable, Equatable {
+    public var host: String
+    public var port: Int
+    public var username: String
+    /// Private key file to use (adds `-i` and `IdentitiesOnly=yes`).
+    public var keyPath: String?
+    /// Key-only account: never fall back to passwords.
+    public var keyOnly: Bool
+    /// Imported from ~/.ssh/config: run `ssh <alias>` so ProxyJump etc. apply.
+    public var sshConfigAlias: String?
+    /// Remote folder to `cd` into.
+    public var remotePath: String?
+
+    public init(host: String, port: Int = 22, username: String = "", keyPath: String? = nil, keyOnly: Bool = false,
+                sshConfigAlias: String? = nil, remotePath: String? = nil) {
+        self.host = host
+        self.port = port
+        self.username = username
+        self.keyPath = keyPath
+        self.keyOnly = keyOnly
+        self.sshConfigAlias = sshConfigAlias
+        self.remotePath = remotePath
+    }
+}
+
+public enum SSHCommandError: Error, LocalizedError, Equatable {
+    case invalidHost(String)
+    case invalidUser(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidHost(let h): return "“\(h)” is not a valid host for ssh."
+        case .invalidUser(let u): return "“\(u)” is not a valid user name for ssh."
+        }
+    }
+}
+
+/// Builds the `ssh` command line; every argument is single-quoted.
+public enum SSHCommandBuilder {
+    /// POSIX single-quote escaping.
+    public static func quote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    static func validateTarget(_ s: String) throws {
+        if s.isEmpty || s.hasPrefix("-") || s.contains(where: { $0.isWhitespace || $0.isNewline }) || s.contains("\0") {
+            throw SSHCommandError.invalidHost(s)
+        }
+    }
+
+    /// Remote `cd`: `~` expands via $HOME, relative paths starting with `-` get `./`.
+    public static func remoteChangeDirectory(_ path: String) -> String {
+        var p = path
+        if p == "~" { return "cd \"$HOME\"" }
+        if p.hasPrefix("~/") {
+            let rest = String(p.dropFirst(2))
+            return rest.isEmpty ? "cd \"$HOME\"" : "cd \"$HOME\"/\(quote(rest))"
+        }
+        if p.hasPrefix("-") { p = "./" + p }
+        return "cd \(quote(p))"
+    }
+
+    /// Remote command run after connecting: change directory, then a login shell.
+    public static func remoteCommand(for path: String) -> String {
+        "\(remoteChangeDirectory(path)) && exec \"$SHELL\" -l"
+    }
+
+    public static func arguments(_ spec: SSHCommandSpec) throws -> [String] {
+        var args = ["ssh", "-t"]
+        if let alias = spec.sshConfigAlias, !alias.isEmpty {
+            try validateTarget(alias)
+            args.append("--")
+            args.append(alias)
+        } else {
+            let host = spec.host.trimmingCharacters(in: .whitespaces)
+            try validateTarget(host)
+            if !spec.username.isEmpty {
+                if spec.username.hasPrefix("-") || spec.username.contains(where: { $0.isWhitespace || $0.isNewline }) {
+                    throw SSHCommandError.invalidUser(spec.username)
+                }
+            }
+            if spec.port != 22 { args += ["-p", String(spec.port)] }
+            if let key = spec.keyPath, !key.isEmpty {
+                args += ["-i", (key as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"]
+                if spec.keyOnly {
+                    args += ["-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no",
+                             "-o", "KbdInteractiveAuthentication=no"]
+                }
+            } else {
+                args += ["-o", "PubkeyAuthentication=no"]
+            }
+            if !spec.username.isEmpty { args += ["-l", spec.username] }
+            args.append("--")
+            args.append(host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host)
+        }
+        if let path = spec.remotePath, !path.isEmpty {
+            args.append(remoteCommand(for: path))
+        }
+        return args
+    }
+
+    public static func commandLine(_ spec: SSHCommandSpec) throws -> String {
+        try arguments(spec).map(quote).joined(separator: " ")
+    }
+}
+
+/// Generates the self-deleting `.command` launcher script.
+public enum TerminalScript {
+    public struct Askpass: Sendable {
+        public var helperPath: String
+        public var socketPath: String
+        public var token: String
+        public init(helperPath: String, socketPath: String, token: String) {
+            self.helperPath = helperPath
+            self.socketPath = socketPath
+            self.token = token
+        }
+    }
+
+    public static func contents(commandLine: String, askpass: Askpass?) -> String {
+        var lines = ["#!/bin/zsh", "# Generated by xFinder; deletes itself.", "rm -f -- \"$0\""]
+        if let a = askpass {
+            lines += [
+                "export SSH_ASKPASS=\(SSHCommandBuilder.quote(a.helperPath))",
+                "export SSH_ASKPASS_REQUIRE=force",
+                "export XFINDER_ASKPASS_SOCKET=\(SSHCommandBuilder.quote(a.socketPath))",
+                "export XFINDER_ASKPASS_TOKEN=\(SSHCommandBuilder.quote(a.token))",
+            ]
+        }
+        lines.append("exec \(commandLine)")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Writes the script with owner-only permissions (0700).
+    public static func write(commandLine: String, askpass: Askpass?, in directory: URL) throws -> URL {
+        _ = try AppPaths.ensureDirectory(directory)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let url = directory.appendingPathComponent("ssh-\(UUID().uuidString.prefix(8)).command")
+        let data = Data(contents(commandLine: commandLine, askpass: askpass).utf8)
+        guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o700]) else {
+            throw RemoteError.localIO("Cannot write \(url.path)")
+        }
+        return url
+    }
+}

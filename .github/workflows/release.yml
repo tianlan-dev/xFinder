@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without the v prefix). Defaults to MARKETING_VERSION in project.yml."
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' project.yml | head -1)
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building xFinder $VERSION (build ${{ github.run_number }})"
+
+      - name: Unit tests
+        run: swift test --skip IntegrationTests
+
+      - name: Build and package
+        run: scripts/package_release.sh "${{ steps.version.outputs.version }}" "${{ github.run_number }}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xFinder-${{ steps.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: xFinder ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/xFinder-${{ steps.version.outputs.version }}.zip
+            dist/xFinder-${{ steps.version.outputs.version }}.dmg
+            dist/SHA256SUMS.txt
+          body: |
+            ## Install
+
+            1. Download `xFinder-${{ steps.version.outputs.version }}.dmg` (or the `.zip`) and drag xFinder to Applications.
+            2. This build is not notarized. On first launch, right-click xFinder and choose **Open**, or run:
+               `xattr -dr com.apple.quarantine /Applications/xFinder.app`
+
+            Already running xFinder? Use **xFinder ▸ Check for Updates…** to update in place.
+
+            Requires an Apple Silicon Mac with macOS 15 or later. SHA-256 checksums are in `SHA256SUMS.txt`.
